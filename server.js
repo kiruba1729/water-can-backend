@@ -2,27 +2,28 @@ const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
 const AWS = require("aws-sdk");
-const { v4: uuidv4 } = require("uuid");  // Unique IDs for users/orders
+const { v4: uuidv4 } = require("uuid");
 
 dotenv.config();
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// AWS DynamoDB Configuration
+// Configure AWS (region is taken from .env)
 AWS.config.update({
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
     region: process.env.AWS_REGION
 });
+
 const dynamoDB = new AWS.DynamoDB.DocumentClient();
 
-// Define Table Names
-const CUSTOMERS_TABLE = "Customers";
-const ORDERS_TABLE = "Orders";
+// Table names from .env
+const CUSTOMERS_TABLE = process.env.CUSTOMERS_TABLE;
+const ORDERS_TABLE = process.env.ORDERS_TABLE;
+const VENDORS_TABLE = process.env.VENDORS_TABLE;
+// (Add additional tables as needed)
 
 // ---------------------------------------------
-// ✅ CUSTOMER REGISTRATION
+// Customer Registration (Example API)
 // ---------------------------------------------
 app.post("/register", async (req, res) => {
     const { fullName, block, doorNo, address } = req.body;
@@ -31,102 +32,102 @@ app.post("/register", async (req, res) => {
         return res.status(400).json({ message: "Full Name and Door No are required!" });
     }
 
-    const userId = uuidv4(); // Generate unique user ID
+    // Generate a unique userId (you might allow users to choose one too)
+    const userId = uuidv4();
+    const newUser = { userId, fullName, block, doorNo, address };
 
-    const newUser = {
-        userId,
-        fullName,
-        block,
-        doorNo,
-        address
-    };
-
-    await dynamoDB.put({ TableName: CUSTOMERS_TABLE, Item: newUser }).promise();
-    res.json({ message: "User registered successfully!", userId });
+    try {
+        await dynamoDB.put({ TableName: CUSTOMERS_TABLE, Item: newUser }).promise();
+        res.json({ message: "User registered successfully!", userId });
+    } catch (error) {
+        res.status(500).json({ message: "Error registering user", error });
+    }
 });
 
 // ---------------------------------------------
-// ✅ PLACE AN ORDER
+// Place Order (For Customers)
 // ---------------------------------------------
 app.post("/order", async (req, res) => {
-    const { userId, quantity, vendorId } = req.body;
-
+    const { userId, quantity } = req.body;
     if (!userId || !quantity) {
-        return res.status(400).json({ message: "User ID and quantity are required!" });
+        return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const orderId = uuidv4();
-    const totalPrice = quantity * 20; // ₹20 per can
-
-    const newOrder = {
-        orderId,
+    const order = {
+        orderId: uuidv4(),
         userId,
-        vendorId,
         quantity,
-        totalPrice,
         timestamp: new Date().toISOString(),
         status: "Pending"
     };
 
-    await dynamoDB.put({ TableName: ORDERS_TABLE, Item: newOrder }).promise();
-    res.json({ message: "Order placed successfully!", orderId });
+    try {
+        await dynamoDB.put({ TableName: ORDERS_TABLE, Item: order }).promise();
+        res.json({ message: "Order placed successfully!", order });
+    } catch (error) {
+        res.status(500).json({ error: "Error placing order", details: error });
+    }
 });
 
 // ---------------------------------------------
-// ✅ GET ORDER HISTORY (FOR CUSTOMERS)
+// Get Order History (For Customers)
 // ---------------------------------------------
 app.get("/order-history", async (req, res) => {
     const { userId } = req.query;
-
     if (!userId) {
-        return res.status(400).json({ message: "User ID is required!" });
+        return res.status(400).json({ error: "User ID is required" });
     }
-
-    const result = await dynamoDB.scan({ TableName: ORDERS_TABLE }).promise();
-    const orders = result.Items.filter(order => order.userId === userId);
-
-    res.json({ orders });
+    // Query or scan based on your table design. For simplicity, we'll use scan here.
+    try {
+        const result = await dynamoDB.scan({ TableName: ORDERS_TABLE }).promise();
+        const orders = result.Items.filter(order => order.userId === userId);
+        res.json({ orders });
+    } catch (error) {
+        res.status(500).json({ error: "Error fetching orders", details: error });
+    }
 });
 
 // ---------------------------------------------
-// ✅ VENDOR DASHBOARD (TOTAL REVENUE & SALES)
+// Get Vendor Dashboard Data
 // ---------------------------------------------
 app.get("/vendor-dashboard", async (req, res) => {
-    const result = await dynamoDB.scan({ TableName: ORDERS_TABLE }).promise();
-
-    const totalRevenue = result.Items.reduce((acc, order) => acc + order.totalPrice, 0);
-    const totalCansSold = result.Items.reduce((acc, order) => acc + Number(order.quantity), 0);
-
-    res.json({ totalRevenue, totalCansSold, orders: result.Items });
+    try {
+        const result = await dynamoDB.scan({ TableName: ORDERS_TABLE }).promise();
+        const orders = result.Items;
+        const totalRevenue = orders.reduce((acc, order) => acc + (order.quantity * 20), 0); // Example: ₹20 per can
+        const totalCansSold = orders.reduce((acc, order) => acc + Number(order.quantity), 0);
+        res.json({ totalRevenue, totalCansSold, orders });
+    } catch (error) {
+        res.status(500).json({ error: "Error fetching dashboard data", details: error });
+    }
 });
 
 // ---------------------------------------------
-// ✅ MONTHLY REPORTS (USER-BASED & TOTAL)
+// Get Monthly Report (User-based or Total)
 // ---------------------------------------------
 app.get("/monthly-report", async (req, res) => {
     const { month, year, userId } = req.query;
 
-    const result = await dynamoDB.scan({ TableName: ORDERS_TABLE }).promise();
-
-    const filteredOrders = result.Items.filter(order => {
-        const orderDate = new Date(order.timestamp);
-        return (
-            orderDate.getMonth() + 1 === parseInt(month) &&
-            orderDate.getFullYear() === parseInt(year) &&
-            (!userId || order.userId === userId)
-        );
-    });
-
-    const totalRevenue = filteredOrders.reduce((acc, order) => acc + order.totalPrice, 0);
-    const totalCansSold = filteredOrders.reduce((acc, order) => acc + order.quantity, 0);
-
-    res.json({ totalRevenue, totalCansSold, orders: filteredOrders });
+    try {
+        const result = await dynamoDB.scan({ TableName: ORDERS_TABLE }).promise();
+        const orders = result.Items.filter(order => {
+            const orderDate = new Date(order.timestamp);
+            return (
+                orderDate.getMonth() + 1 === parseInt(month) &&
+                orderDate.getFullYear() === parseInt(year) &&
+                (!userId || order.userId === userId)
+            );
+        });
+        const totalRevenue = orders.reduce((acc, order) => acc + (order.quantity * 20), 0);
+        const totalCansSold = orders.reduce((acc, order) => acc + Number(order.quantity), 0);
+        res.json({ totalRevenue, totalCansSold, orders });
+    } catch (error) {
+        res.status(500).json({ error: "Error generating report", details: error });
+    }
 });
 
-// ---------------------------------------------
-// ✅ START SERVER
-// ---------------------------------------------
-app.listen(4000, () => {
-    console.log("🚀 Server running on http://localhost:4000");
+app.listen(process.env.PORT || 4000, () => {
+    console.log(`🚀 Server running on http://localhost:${process.env.PORT || 4000}`);
 });
+
 
